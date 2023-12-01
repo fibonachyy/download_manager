@@ -4,38 +4,45 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"go-download-manager/domain"
 	"net/http"
+	"net/url"
 	"strconv"
 	"sync"
 	"time"
 )
 
 type Download struct {
-	Url              string
-	Size             int
+	FileName         string
+	Url              *url.URL
+	Size             int64
 	SavePath         string
 	EndDate          time.Time
 	Duration         time.Duration
-	Sections         [][3]int
-	FirstSectionSize int
+	Sections         []section
+	FirstSectionSize int64
 	Workers          int
-	PortionSize      int
+	PortionSize      int64
+	ctx              context.Context
+	cancel           context.CancelFunc
 }
 
-func NewDownload(url string, firstSectionSize int, portionSize int, workers int) (*Download, error) {
+func NewDownload(u string, firstSectionSize int64, portionSize int64, workers int) (*Download, error) {
+	parsedURL, err := url.Parse(u)
+	if err != nil {
+		return &Download{}, err
+	}
+
 	return &Download{
-		Url:              url,
+		Url:              parsedURL,
+		SavePath:         "./",
+		FileName:         domain.ExtractFileNameFromURL(*parsedURL),
 		FirstSectionSize: firstSectionSize,
 		PortionSize:      portionSize,
 		Workers:          workers,
-		Sections:         [][3]int{},
 	}, nil
 }
-
-func (d *Download) Start() error {
-	// Create a context with cancellation for the download process
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel() // Ensure cancellation when the main function exits
+func (d *Download) Start(ctx context.Context) error {
 
 	err := d.CalculateSize()
 	if err != nil {
@@ -46,17 +53,31 @@ func (d *Download) Start() error {
 		panic(err.Error())
 	}
 	numWorkers := 3
-
 	// Create a wait group to wait for all workers to finish
 	var wg sync.WaitGroup
-	sectionChan := make(chan [3]int)
+	sectionChan := make(chan section)
 	for i := 0; i < numWorkers; i++ {
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
-			d.worker(ctx, sectionChan, workerID)
+			for {
+				select {
+				case section, ok := <-sectionChan:
+					fmt.Printf("section %d: start\n", section.ID)
+					if !ok {
+						return
+					}
+					err := section.Resume(ctx)
+					if err != nil {
+						fmt.Printf("Worker %v encountered an error: %v\n", workerID, err)
+						return
+					}
+				}
+			}
+
 		}(i)
 	}
+
 	for _, section := range d.Sections {
 		sectionChan <- section
 	}
@@ -66,8 +87,18 @@ func (d *Download) Start() error {
 
 	// Wait for all workers to finish
 	wg.Wait()
+	err = d.mergeFiles(d.Sections)
+	if err != nil {
+		return fmt.Errorf("error merging files: %v", err)
+	}
 	fmt.Println("Download complete!")
 	return nil
+}
+
+func (d *Download) Pause() {
+	if d.ctx != nil {
+		d.cancel()
+	}
 }
 
 func (d *Download) CalculateSize() error {
@@ -88,7 +119,8 @@ func (d *Download) CalculateSize() error {
 	if err != nil {
 		return err
 	}
-	d.Size = int(fileSize)
+	d.Size = int64(fileSize)
+	d.PortionSize = d.Size / 8
 	return nil
 }
 func (d *Download) GenerateSections() error {
@@ -103,18 +135,23 @@ func (d *Download) GenerateSections() error {
 	// }
 	// duration := time.Now().Sub(s).Seconds()
 	// bitrate := CalculateBitrate(d.Size, duration)
-	var sections [][3]int
+	var sections []section
 
 	// _ = bitrate
-	step := int(0)
-	for i := 0; i < d.Size; i += d.PortionSize {
+	step := int64(0)
+	for i := int64(0); i < d.Size; i += d.PortionSize {
 		// Calculate the size of the current portion
 		currentSize := d.PortionSize
 		if i+d.PortionSize > d.Size {
 			// Adjust the size for the last portion
 			currentSize = d.Size - i + 1
 		}
-		sections = append(sections, [3]int{step, i, i + currentSize - 1})
+		sections = append(sections, section{
+			ID:             step,
+			Start:          i,
+			End:            i + currentSize - 1,
+			Current:        i,
+			ParentDownload: d})
 		step++
 	}
 	d.Sections = sections
@@ -127,31 +164,10 @@ func CalculateBitrate(size int, downloadDuration float64) string {
 	return strconv.FormatFloat(sizeInMB/timeInSeconds, 'f', 4, 64)
 }
 
-// Worker function to download sections concurrently
-func (d *Download) worker(ctx context.Context, sectionChan <-chan [3]int, workerID int) {
-	for {
-		select {
-		case section, ok := <-sectionChan:
-			if !ok {
-				// Channel is closed, worker can exit
-				return
-			}
-
-			// Download the section
-			err := d.downloadSection(ctx, section)
-			if err != nil {
-				fmt.Printf("Worker %v encountered an error: %v\n", workerID, err)
-			}
-
-		case <-ctx.Done():
-			// Context canceled, worker can exit
-			return
-		}
-	}
-}
-
 func (d *Download) Show() {
-	fmt.Println(d)
+	for _, section := range d.Sections {
+		fmt.Println(section.ID, section.End-section.Start/100)
+	}
 }
 
 // // Start the download

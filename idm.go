@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"go-download-manager/pkg/idm"
 )
@@ -23,7 +24,14 @@ func main() {
 	if err != nil {
 		panic(err.Error())
 	}
-	d.Start()
 
+	ctx, cancel := context.WithCancel(context.Background())
+	_ = cancel
+	d.Start(ctx)
+	// func() {
+	// 	time.Sleep(time.Second * 5)
+	// 	cancel()
+	// }()
+	fmt.Println("here")
 	d.Show()
 }
