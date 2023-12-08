@@ -10,7 +10,7 @@ import (
 // WorkerProgress represents the progress for a specific worker.
 type WorkerProgress struct {
 	workerID int
-	total    int64
+	total    int
 	current  float64
 }
 
@@ -31,7 +31,7 @@ func NewProgressBar(updateDelay time.Duration) *ProgressBar {
 }
 
 // StartWorker starts a worker to update the progress.
-func (p *ProgressBar) StartWorker(workerID int, total int64, done <-chan struct{}, progress <-chan float64) {
+func (p *ProgressBar) StartWorker(workerID int, total int, done <-chan struct{}, progress <-chan float64) {
 	workerProgress := &WorkerProgress{
 		workerID: workerID,
 	}
@@ -48,14 +48,14 @@ func (p *ProgressBar) StartWorker(workerID int, total int64, done <-chan struct{
 			case <-done:
 				return
 			case val := <-progress:
-				fmt.Println(val)
+
 				p.updateProgress(workerID, val, total)
 			}
 		}
 	}()
 }
 
-func (p *ProgressBar) updateProgress(workerID int, value float64, total int64) {
+func (p *ProgressBar) updateProgress(workerID int, value float64, total int) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	workerProgress, ok := p.workerMap[workerID]

@@ -15,19 +15,20 @@ import (
 type Download struct {
 	FileName         string
 	Url              *url.URL
-	Size             int64
+	Size             int
 	SavePath         string
 	EndDate          time.Time
 	Duration         time.Duration
-	Sections         []section
-	FirstSectionSize int64
+	Sections         map[int]section
+	SectionCounts    int
+	FirstSectionSize int
 	Workers          int
-	PortionSize      int64
+	PortionSize      int
 	ctx              context.Context
 	cancel           context.CancelFunc
 }
 
-func NewDownload(u string, firstSectionSize int64, portionSize int64, workers int) (*Download, error) {
+func NewDownload(u string, firstSectionSize int, portionSize int, workers int) (*Download, error) {
 	parsedURL, err := url.Parse(u)
 	if err != nil {
 		return &Download{}, err
@@ -87,7 +88,7 @@ func (d *Download) Start(ctx context.Context) error {
 
 	// Wait for all workers to finish
 	wg.Wait()
-	err = d.mergeFiles(d.Sections)
+	err = d.mergeFiles()
 	if err != nil {
 		return fmt.Errorf("error merging files: %v", err)
 	}
@@ -119,7 +120,7 @@ func (d *Download) CalculateSize() error {
 	if err != nil {
 		return err
 	}
-	d.Size = int64(fileSize)
+	d.Size = int(fileSize)
 	d.PortionSize = d.Size / 8
 	return nil
 }
@@ -135,23 +136,24 @@ func (d *Download) GenerateSections() error {
 	// }
 	// duration := time.Now().Sub(s).Seconds()
 	// bitrate := CalculateBitrate(d.Size, duration)
-	var sections []section
+	sections := make(map[int]section)
 
 	// _ = bitrate
-	step := int64(0)
-	for i := int64(0); i < d.Size; i += d.PortionSize {
+	step := int(0)
+	for i := int(0); i < d.Size; i += d.PortionSize {
 		// Calculate the size of the current portion
 		currentSize := d.PortionSize
 		if i+d.PortionSize > d.Size {
 			// Adjust the size for the last portion
 			currentSize = d.Size - i + 1
 		}
-		sections = append(sections, section{
+		sections[int(step)] = section{
 			ID:             step,
 			Start:          i,
 			End:            i + currentSize - 1,
 			Current:        i,
-			ParentDownload: d})
+			ParentDownload: d}
+
 		step++
 	}
 	d.Sections = sections

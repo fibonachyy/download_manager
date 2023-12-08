@@ -9,42 +9,64 @@ import (
 )
 
 type section struct {
-	Start          int64
-	End            int64
-	ID             int64
+	Start          int
+	End            int
+	ID             int
 	Name           string
-	Current        int64
+	Current        int
 	ParentDownload *Download
 }
 
-func (s *section) completePercentage() int64 {
+func (s *section) completePercentage() int {
 	percentage := ((s.Current - s.Start) / (s.End - s.Start)) * 100
 	return percentage
 }
+
+func (s *section) fileName() string {
+	return fmt.Sprintf("%v/%v-%v.tmp", s.ParentDownload.SavePath, s.ParentDownload.FileName, s.ID)
+}
+
+func (s *section) size() int {
+	return s.End - s.Start
+}
+
+func (s *section) checkChunkFile() (int, error) {
+	// Get file information
+	fileInfo, err := os.Stat(s.fileName())
+	if err != nil {
+		return 0, err
+	}
+	return int(fileInfo.Size()), nil
+}
+
 func (s *section) Resume(ctx context.Context) error {
 
-	r, err := s.ParentDownload.getNewRequest("GET")
+	// Create or open the file for writing
+	downloadedBytes, _ := s.checkChunkFile()
+	if downloadedBytes == s.size() {
+		fmt.Printf("Section %d has already been fully downloaded\n", s.ID)
+		return nil
+	}
+	// If there's partial download, calculate the current range
+	s.Current = s.Start + downloadedBytes
 
+	fmt.Printf("Resuming download for section %d: start from %d\n", s.ID, s.Current)
+
+	fmt.Printf("%#v-%v-%v\n", s, downloadedBytes, s.size())
+	r, err := s.ParentDownload.getNewRequest("GET")
 	if err != nil {
 		return err
 	}
-
+	fmt.Println(fmt.Sprintf("bytes=%v-%v", s.Current, s.End))
 	r.Header.Set("Range", fmt.Sprintf("bytes=%v-%v", s.Current, s.End))
 	rWithContext := r.WithContext(ctx)
-	fileName := fmt.Sprintf("%v/%v-%v.tmp", s.ParentDownload.SavePath, s.ParentDownload.FileName, s.ID)
-	// Create or open the file for writing
 
-	file, err := os.OpenFile(fileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	file, err := os.OpenFile(s.fileName(), os.O_CREATE|os.O_APPEND, 0666)
 
 	if err != nil {
 		return fmt.Errorf("error creating tmp file: %v", err)
 	}
 	defer file.Close() // Close the file when the download is complete or if there's an error
-	t, err := io.ReadAll(file)
-	if err != nil {
-		return fmt.Errorf("error reading tmp file: %v", err)
-	}
-	fmt.Println(t)
 	resp, err := http.DefaultClient.Do(rWithContext)
 	if err != nil {
 		return err
@@ -53,14 +75,14 @@ func (s *section) Resume(ctx context.Context) error {
 		return fmt.Errorf("Can't process section %d, response is %v", s.ID, resp.StatusCode)
 	}
 
-	var bytesRead int64
+	var bytesRead int
 	bufferSize := 4096                    // Adjust the buffer size as needed
 	buffer := make([]byte, 0, bufferSize) // Initialize an empty buffer with capacity
 
 	progressReader := &progressReader{
 		Reader: io.TeeReader(resp.Body, file),
 		OnRead: func(n int, p []byte) {
-			bytesRead += int64(n)
+			bytesRead += int(n)
 
 			// Append the downloaded data to 'buffer'
 			buffer = append(buffer, p[:n]...)
