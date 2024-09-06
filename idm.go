@@ -13,13 +13,12 @@ type Idm struct {
 type Job struct {
 }
 
+// TODO: implimrent cheksum check after asmebeling file
 func main() {
 	d, err := idm.NewDownload(
-		// fmt.Sprintf("https://dl2.soft98.ir/soft/i/Internet.Download.Manager.6.42.Build.1.Retail.zip?1700930984"),
-		fmt.Sprintf("https://dl2.soft98.ir/soft/m/Mozilla.Firefox.120.0.EN.x64.zip?1701093556"),
-		5000,
-		2000000,
+		"https://dl.sakhamusic.ir/94/aban/03/Moshen%20Namjoo%20&%20Nerve%20-%20Hafiz%20[128].mp3",
 		5,
+		1,
 	)
 	if err != nil {
 		panic(err.Error())

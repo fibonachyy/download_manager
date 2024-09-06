@@ -2,7 +2,6 @@ package idm
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"go-download-manager/domain"
 	"net/http"
@@ -13,70 +12,50 @@ import (
 )
 
 type Download struct {
-	FileName         string
-	Url              *url.URL
-	Size             int
-	SavePath         string
-	EndDate          time.Time
-	Duration         time.Duration
-	Sections         map[int]section
-	SectionCounts    int
-	FirstSectionSize int
-	Workers          int
-	PortionSize      int
-	ctx              context.Context
-	cancel           context.CancelFunc
+	FileName      string
+	Url           *url.URL
+	Size          int
+	SavePath      string
+	EndDate       time.Time
+	Duration      time.Duration
+	Sections      []section
+	SectionCounts int
+	Workers       int
+	ctx           context.Context
+	cancel        context.CancelFunc
 }
 
-func NewDownload(u string, firstSectionSize int, portionSize int, workers int) (*Download, error) {
+func NewDownload(u string, SectionCounts int, workers int) (*Download, error) {
 	parsedURL, err := url.Parse(u)
 	if err != nil {
 		return &Download{}, err
 	}
 
 	return &Download{
-		Url:              parsedURL,
-		SavePath:         "./",
-		FileName:         domain.ExtractFileNameFromURL(*parsedURL),
-		FirstSectionSize: firstSectionSize,
-		PortionSize:      portionSize,
-		Workers:          workers,
+		Url:           parsedURL,
+		SavePath:      "./",
+		FileName:      domain.ExtractFileNameFromURL(*parsedURL),
+		Workers:       workers,
+		SectionCounts: 5,
 	}, nil
 }
+
 func (d *Download) Start(ctx context.Context) error {
 
 	err := d.CalculateSize()
 	if err != nil {
-		return fmt.Errorf("Failed to calculate size: %v", err)
+		return fmt.Errorf("failed to calculate size: %v", err)
 	}
 	err = d.GenerateSections()
 	if err != nil {
 		panic(err.Error())
 	}
-	numWorkers := 3
 	// Create a wait group to wait for all workers to finish
 	var wg sync.WaitGroup
 	sectionChan := make(chan section)
-	for i := 0; i < numWorkers; i++ {
+	for i := 0; i < d.Workers; i++ {
 		wg.Add(1)
-		go func(workerID int) {
-			defer wg.Done()
-			for {
-				select {
-				case section, ok := <-sectionChan:
-					fmt.Printf("section %d: start\n", section.ID)
-					if !ok {
-						return
-					}
-					err := section.Resume(ctx)
-					if err != nil {
-						fmt.Printf("Worker %v encountered an error: %v\n", workerID, err)
-						return
-					}
-				}
-			}
-
-		}(i)
+		go d.worker(ctx, &wg, sectionChan)
 	}
 
 	for _, section := range d.Sections {
@@ -95,7 +74,22 @@ func (d *Download) Start(ctx context.Context) error {
 	fmt.Println("Download complete!")
 	return nil
 }
-
+func (d Download) worker(ctx context.Context, wg *sync.WaitGroup, sectionChan <-chan section) error {
+	defer wg.Done()
+	for {
+		select {
+		case section, ok := <-sectionChan:
+			fmt.Printf("section %d: start\n", section.ID)
+			if !ok {
+				return nil
+			}
+			err := section.Resume(ctx)
+			if err != nil {
+				return fmt.Errorf("worker encountered an error: %v", err)
+			}
+		}
+	}
+}
 func (d *Download) Pause() {
 	if d.ctx != nil {
 		d.cancel()
@@ -103,9 +97,11 @@ func (d *Download) Pause() {
 }
 
 func (d *Download) CalculateSize() error {
+
+	fmt.Println("reading file size...")
 	r, err := d.getNewRequest("HEAD")
 	if err != nil {
-		return fmt.Errorf("read head of file: %v", err)
+		return fmt.Errorf("read head of file: %v\n", err)
 	}
 	resp, err := http.DefaultClient.Do(r)
 	if err != nil {
@@ -113,7 +109,7 @@ func (d *Download) CalculateSize() error {
 	}
 	fmt.Printf("Head request status: %v\n", resp.StatusCode)
 	if resp.StatusCode > 299 {
-		return errors.New(fmt.Sprintf("Can't process,Head response is %v", resp.StatusCode))
+		return fmt.Errorf(fmt.Sprintf("can't process,Head response is %v", resp.StatusCode))
 	}
 
 	fileSize, err := strconv.Atoi(resp.Header.Get("Content-Length"))
@@ -121,40 +117,36 @@ func (d *Download) CalculateSize() error {
 		return err
 	}
 	d.Size = int(fileSize)
-	d.PortionSize = d.Size / 8
+	fmt.Printf("File sise %v\n", d.Size)
+	d.PortionSize = d.Size / d.SectionCounts
+	fmt.Printf("Portion siez with %v section is %v\n", d.SectionCounts, d.PortionSize)
 	return nil
 }
 func (d *Download) GenerateSections() error {
 
 	// s := time.Now()
-	if d.FirstSectionSize > d.Size {
-		d.FirstSectionSize = d.Size
-	}
+
 	// err := d.downloadSection(0, [2]int{0, d.FirstSectionSize - 1})
 	// if err != nil {
 	// 	return nil, fmt.Errorf("error on calculating speed of first section: %v", err)
 	// }
 	// duration := time.Now().Sub(s).Seconds()
 	// bitrate := CalculateBitrate(d.Size, duration)
-	sections := make(map[int]section)
 
-	// _ = bitrate
-	step := int(0)
-	for i := int(0); i < d.Size; i += d.PortionSize {
-		// Calculate the size of the current portion
-		currentSize := d.PortionSize
-		if i+d.PortionSize > d.Size {
-			// Adjust the size for the last portion
-			currentSize = d.Size - i + 1
-		}
-		sections[int(step)] = section{
-			ID:             step,
-			Start:          i,
-			End:            i + currentSize - 1,
-			Current:        i,
-			ParentDownload: d}
+	sections := make([]section, 0, d.SectionCounts)
 
-		step++
+	// Calculate the size of the current portion
+	for i := 0; i < d.SectionCounts; i++ {
+		start := i * d.PortionSize
+		sections = append(sections, section{
+			ID:             i,
+			Start:          start,
+			End:            start + d.PortionSize - 1,
+			Current:        0,
+			ParentDownload: d})
+	}
+	for i, s := range sections {
+		fmt.Printf("%d%+#v/n", i, s)
 	}
 	d.Sections = sections
 	return nil
